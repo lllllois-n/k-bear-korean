@@ -544,7 +544,6 @@ function loop(now){ T = now; hits.clear();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
-if (!window.DATA) { var DATA = DATA; } // keep linter quiet
 if (DATA.firstRun) go(Splash); else go(Home);
   </script>
 </body>
