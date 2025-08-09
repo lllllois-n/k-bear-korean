@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>K-Bear Learner — Korean on Canvas</title>
+  <meta name="theme-color" content="#0b1020" />
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#0b1020; overscroll-behavior:none; touch-action: none; }
+    canvas { display:block; width:100vw; height:100vh; }
+  </style>
+  <!-- PWA Meta for standalone look -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="K-Bear Learner" />
+</head>
+<body>
+  <canvas id="app"></canvas>
+  <script>
+  // ===== PWA single-file setup: dynamic manifest + icons + install prompt =====
+  let deferredPrompt = null; let canInstall = false;
+  window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt = e; canInstall = true; });
+  (function setupPWA(){
+    function makeIcon(size){
+      const c=document.createElement('canvas'); c.width=c.height=size; const x=c.getContext('2d');
+      x.fillStyle='#0b1020'; x.fillRect(0,0,size,size);
+      const g=x.createLinearGradient(0,0,size,size); g.addColorStop(0,'#4ef0d6'); g.addColorStop(1,'#8a7dff');
+      x.fillStyle=g; x.beginPath(); x.arc(size*0.5,size*0.5,size*0.42,0,Math.PI*2); x.fill();
+      x.fillStyle='#0b1020'; x.beginPath(); x.arc(size*0.5,size*0.5,size*0.34,0,Math.PI*2); x.fill();
+      x.fillStyle='#3b4170'; x.beginPath(); x.arc(size*0.5,size*0.55,size*0.22,0,Math.PI*2); x.fill();
+      x.beginPath(); x.arc(size*0.5-size*0.12,size*0.38,size*0.08,0,Math.PI*2); x.arc(size*0.5+size*0.12,size*0.38,size*0.08,0,Math.PI*2); x.fill();
+      x.fillStyle='#ffcfdf'; x.beginPath(); x.arc(size*0.5-size*0.12,size*0.38,size*0.05,0,Math.PI*2); x.arc(size*0.5+size*0.12,size*0.38,size*0.05,0,Math.PI*2); x.fill();
+      x.fillStyle='#1b1e34'; x.beginPath(); x.arc(size*0.5-size*0.06,size*0.55,size*0.04,0,Math.PI*2); x.arc(size*0.5+size*0.06,size*0.55,size*0.04,0,Math.PI*2); x.fill();
+      x.beginPath(); x.arc(size*0.5,size*0.64,size*0.06,0,Math.PI*2); x.fill();
+      return c.toDataURL('image/png');
+    }
+    const sizes=[192,256,384,512];
+    const icons=sizes.map(s=>({src:makeIcon(s),sizes:`${s}x${s}`,type:'image/png',purpose:'any maskable'}));
+    const apple=document.createElement('link'); apple.rel='apple-touch-icon'; apple.href=icons[icons.length-1].src; document.head.appendChild(apple);
+    const manifest={ name:'K-Bear Learner', short_name:'K-Bear', start_url:'.', scope:'.', display:'standalone', background_color:'#0b1020', theme_color:'#0b1020', icons };
+    const blob=new Blob([JSON.stringify(manifest)],{type:'application/manifest+json'});
+    const url=URL.createObjectURL(blob); const link=document.createElement('link'); link.rel='manifest'; link.href=url; document.head.appendChild(link);
+  })();
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').then(function(reg){
+        console.log('Service Worker registered', reg);
+      });
+    }
+  </script>
+  <script>
+/**
+ * K-Bear Learner — A 100% Canvas, mobile-first Korean learning app (desktop-friendly)
+ * Features:
+ *  - Animated canvas UI with cozy night-forest theme
+ *  - Activities: Flashcards, Quizzes, and a Snake-style Bear Game (bear eats sweet potatoes)
+ *  - TTS voice-over (ko-KR) announcing a new Korean word each time the bear eats a sweet potato
+ *  - Daily progress tracking (XP, streak, words learned)
+ *  - Touch + keyboard controls (Arrow keys/WASD), on-screen D-pad for mobile
+ *  - LocalStorage persistence
+ */
+const DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+const canvas = document.getElementById('app');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, T = 0; // width/height/time
+function resize() {
+  W = Math.floor(window.innerWidth);
+  H = Math.floor(window.innerHeight);
+  canvas.width = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+const THEME = {
+  bgTop: '#0c1330', bgBottom: '#0b1020',
+  moon: '#f3e9c9', star: '#ffd88b',
+  mint: '#4ef0d6', pink: '#ff7ab6', purple: '#8a7dff', yellow: '#ffd85c',
+  lime: '#9bff8d', orange: '#ffb366', red: '#ff6b6b', white: '#f4f7fb'
+};
+function roundedRect(ctx, x,y,w,h,r){
+  const rr = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+rr,y);
+  ctx.arcTo(x+w,y,x+w,y+h,rr);
+  ctx.arcTo(x+w,y+h,x,y+h,rr);
+  ctx.arcTo(x,y+h,x,y,rr);
+  ctx.arcTo(x,y,x+w,y,rr);
+  ctx.closePath();
+}
+class Hit {
+  constructor(){ this.items = []; }
+  add(id, x,y,w,h, onTap){ this.items.push({id,x,y,w,h,onTap}); }
+  clear(){ this.items.length = 0; }
+  tap(px,py){
+    for (let i=this.items.length-1;i>=0;i--) {
+      const b=this.items[i];
+      if (px>=b.x && py>=b.y && px<=b.x+b.w && py<=b.y+b.h) { b.onTap?.(); return b.id; }
+    }
+    return null;
+  }
+}
+const hits = new Hit();
+let pointer = {x:0,y:0, down:false, startX:0,startY:0, moved:false, dx:0,dy:0};
+canvas.addEventListener('pointerdown', e=>{
+  pointer.down = true; pointer.moved = false; pointer.dx=0; pointer.dy=0;
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = (e.clientX - rect.left); pointer.y = (e.clientY - rect.top);
+  pointer.startX = pointer.x; pointer.startY = pointer.y;
+});
+canvas.addEventListener('pointermove', e=>{
+  if (!pointer.down) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left), y = (e.clientY - rect.top);
+  pointer.dx = x - pointer.x; pointer.dy = y - pointer.y;
+  pointer.x = x; pointer.y = y; pointer.moved = true;
+});
+canvas.addEventListener('pointerup', e=>{
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left), y = (e.clientY - rect.top);
+  const dist = Math.hypot(x-pointer.startX, y-pointer.startY);
+  if (dist < 10) hits.tap(x,y); else handleSwipe(pointer.startX, pointer.startY, x, y);
+  pointer.down = false; pointer.moved = false;
+});
+function handleSwipe(x0,y0,x1,y1){
+  const dx = x1-x0, dy=y1-y0;
+  if (Math.hypot(dx,dy) < 30) return;
+  const adx = Math.abs(dx), ady = Math.abs(dy);
+  if (currentScene?.onSwipe) {
+    if (adx > ady) currentScene.onSwipe(dx>0? 'right':'left');
+    else currentScene.onSwipe(dy>0? 'down':'up');
+  }
+}
+let keys = {};
+window.addEventListener('keydown', e=>{ keys[e.key] = true; currentScene?.onKey?.(e.key, true); });
+window.addEventListener('keyup', e=>{ keys[e.key] = false; currentScene?.onKey?.(e.key, false); });
+function button(x,y,w,h,label, sublabel, id, primary=true){
+  const r = Math.min(16, h/3);
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur=12; ctx.shadowOffsetY=4;
+  ctx.fillStyle = primary? THEME.mint : 'rgba(255,255,255,0.08)';
+  roundedRect(ctx, x,y,w,h,r); ctx.fill();
+  ctx.shadowBlur=0; ctx.shadowOffsetY=0; ctx.fillStyle = primary? '#0b1020' : THEME.white;
+  ctx.font = `600 ${Math.floor(h*0.42)}px system-ui, -apple-system, Segoe UI, Noto Sans, sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label, x+w/2, y+h/2);
+  if (sublabel){
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.font = `500 ${Math.floor(h*0.22)}px system-ui, -apple-system, Segoe UI, Noto Sans, sans-serif`;
+    ctx.fillText(sublabel, x+w/2, y*h*0.82);
+  }
+  hits.add(id, x,y,w,h, ()=> currentScene?.onTap?.(id));
+  ctx.restore();
+}
+function chip(x,y, text, id){
+  const p = 10, fs = 16; ctx.font = `600 ${fs}px system-ui, Noto Sans, sans-serif`;
+  const w = ctx.measureText(text).width + p*2, h = fs + p*1.2;
+  ctx.save(); ctx.globalAlpha=0.9; ctx.fillStyle='rgba(255,255,255,0.08)'; roundedRect(ctx,x,y,w,h,12); ctx.fill();
+  ctx.fillStyle=THEME.white; ctx.textBaseline='top'; ctx.textAlign='left'; ctx.fillText(text, x+p, y+p*0.6);
+  hits.add(id, x,y,w,h, ()=> currentScene?.onTap?.(id)); ctx.restore();
+  return {w,h};
+}
+function drawSky(t){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, THEME.bgTop); g.addColorStop(1, THEME.bgBottom);
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  const n = 60;
+  for (let i=0;i<n;i++){
+    const x = (i*73 % W), y = (i*137 % H*0.5)+10;
+    const twinkle = (Math.sin(t*0.001 + i)*0.5+0.5)*0.8+0.2;
+    ctx.globalAlpha = 0.6*twinkle; ctx.fillStyle=THEME.star;
+    ctx.beginPath(); ctx.arc(x,y, Math.random()*1.2+0.6, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.save(); ctx.shadowColor='#fefae0'; ctx.shadowBlur=30; ctx.fillStyle=THEME.moon;
+  ctx.beginPath(); ctx.arc(W-70, 70, 26, 0, Math.PI*2); ctx.fill(); ctx.restore();
+  const baseY = H*0.8; ctx.fillStyle = '#0a0f23';
+  ctx.beginPath(); ctx.moveTo(0,H); for(let x=0;x<=W;x+=20){
+    const y = baseY + Math.sin((x+t*0.05)/120)*8 + Math.cos((x+t*0.03)/90)*5; ctx.lineTo(x,y);
+  } ctx.lineTo(W,H); ctx.closePath(); ctx.fill();
+}
+function drawHeader(title, subtitle){
+  ctx.fillStyle=THEME.white; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.font = `800 ${Math.max(22, Math.floor(W*0.055))}px system-ui, Noto Sans, sans-serif`;
+  ctx.fillText(title, 24, 20);
+  ctx.font = `500 ${Math.max(12, Math.floor(W*0.032))}px system-ui, Noto Sans, sans-serif`;
+  ctx.globalAlpha=0.8; ctx.fillText(subtitle, 24, 28 + Math.max(22, Math.floor(W*0.055)));
+  ctx.globalAlpha=1;
+}
+let toastMsg = null, toastUntil = 0;
+function toast(msg, dur=1600){ toastMsg = msg; toastUntil = performance.now()+dur; }
+function drawToast(now){ if (!toastMsg) return; if (now>toastUntil){ toastMsg=null; return; }
+  const alpha = Math.min(1, (toastUntil-now)/300);
+  ctx.save(); ctx.globalAlpha=alpha; const fs=16; ctx.font=`600 ${fs}px system-ui, Noto Sans`;
+  const padding=12; const w=ctx.measureText(toastMsg).width+padding*2, h=fs+padding*1.2;
+  const x=(W-w)/2, y=H- h - 24; ctx.fillStyle='rgba(0,0,0,0.55)'; roundedRect(ctx,x,y,w,h,12); ctx.fill();
+  ctx.fillStyle=THEME.white; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(toastMsg, x+w/2, y+h/2);
+  ctx.restore();
+}
+const LS_KEY = 'kbear.v1';
+function loadData(){ try { return JSON.parse(localStorage.getItem(LS_KEY)) || null; } catch(e){ return null; } }
+function saveData(){ localStorage.setItem(LS_KEY, JSON.stringify(DATA)); }
+function todayKey(){ const d = new Date(); const yyyy=d.getFullYear(); const mm=(d.getMonth()+1).toString().padStart(2,'0'); const dd=d.getDate().toString().padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; }
+const WORDS = [
+  {ko:'안녕하세요', zh:'你好/您好'}, {ko:'고맙습니다', zh:'謝謝'}, {ko:'죄송합니다', zh:'對不起/抱歉'},
+  {ko:'괜찮아요', zh:'沒關係/可以'}, {ko:'주세요', zh:'請給我…'}, {ko:'얼마예요?', zh:'多少錢?'},
+  {ko:'어디예요?', zh:'在哪裡?'}, {ko:'화장실', zh:'洗手間'}, {ko:'지하철', zh:'地鐵'}, {ko:'버스', zh:'公車'},
+  {ko:'갈아타다', zh:'轉乘'}, {ko:'걸리다', zh:'花費(時間)'}, {ko:'일찍', zh:'早一點'}, {ko:'늦다', zh:'晚/遲到'},
+  {ko:'약속', zh:'約定'}, {ko:'준비하다', zh:'準備'}, {ko:'연습하다', zh:'練習'}, {ko:'필요하다', zh:'需要'},
+  {ko:'가능하다', zh:'可以/可能'}, {ko:'괜히', zh:'白白地/徒然'}, {ko:'그럼', zh:'那麼/那就'}, {ko:'하지만', zh:'但是'},
+  {ko:'그래서', zh:'所以/因此'}, {ko:'그러니까', zh:'所以/也就是說'}, {ko:'왜냐하면', zh:'因為'},
+  {ko:'아마', zh:'也許/大概'}, {ko:'정말', zh:'真的'}, {ko:'약간', zh:'有點'}, {ko:'이미', zh:'已經'},
+  {ko:'아직', zh:'還/尚未'}, {ko:'바로', zh:'立刻/馬上/正是'}, {ko:'혹시', zh:'或許/萬一'},
+  {ko:'맞다', zh:'正確/合適'}, {ko:'틀리다', zh:'錯誤'}, {ko:'쉽다', zh:'容易'}, {ko:'어렵다', zh:'困難'},
+  {ko:'도와주다', zh:'幫忙'}, {ko:'기다리다', zh:'等待'}, {ko:'만나다', zh:'見面'}, {ko:'연락하다', zh:'聯絡'},
+  {ko:'생각하다', zh:'思考/覺得'}, {ko:'기억하다', zh:'記得'}, {ko:'잊다', zh:'忘記'}, {ko:'고민하다', zh:'煩惱'},
+  {ko:'정리하다', zh:'整理'}, {ko:'준비됐어요', zh:'準備好了'}, {ko:'배고파요', zh:'肚子餓'}, {ko:'배불러요', zh:'吃飽了'},
+  {ko:'괜찮을까요?', zh:'可以嗎?'}, {ko:'추천하다', zh:'推薦'}, {ko:'연휴', zh:'連假'}, {ko:'주말', zh:'週末'},
+  {ko:'평일', zh:'平日'}, {ko:'가능할 때', zh:'有空的時候'}, {ko:'잠깐만요', zh:'等一下'}, {ko:'지금', zh:'現在'},
+  {ko:'나중에', zh:'等一下/之後'}, {ko:'방금', zh:'剛剛'}, {ko:'곧', zh:'馬上'}, {ko:'언제', zh:'什麼時候'}
+];
+let DATA = loadData() || {
+  firstRun: true,
+  settings: { audio:true, tts:true, language:'zh', dailyGoal: 30 },
+  progress: {
+    lastActive: todayKey(),
+    streak: 0, xpToday: 0, xpTotal: 0,
+    wordsSeenToday: [],
+    leitner: {},
+    quiz: { correct:0, total:0 }
+  }
+};
+function ensureDay(){
+  const t = todayKey();
+  if (DATA.progress.lastActive !== t){
+    if (DATA.progress.xpToday >= DATA.settings.dailyGoal) DATA.progress.streak += 1; else DATA.progress.streak = 0;
+    DATA.progress.lastActive = t; DATA.progress.xpToday = 0; DATA.progress.wordsSeenToday = [];
+    saveData();
+  }
+}
+ensureDay();
+function addXP(n){ DATA.progress.xpToday += n; DATA.progress.xpTotal += n; saveData(); }
+function sawWordToday(idx){ if (!DATA.progress.wordsSeenToday.includes(idx)){ DATA.progress.wordsSeenToday.push(idx); saveData(); } }
+function nextDue(box){ const d=new Date(); const days=[0,0,1,3,7,14][box]||0; d.setDate(d.getDate()+days); const yyyy=d.getFullYear(),mm=(d.getMonth()+1+'').padStart(2,'0'),dd=(d.getDate()+'').padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; }
+function updateLeitner(idx, success){ let L=DATA.progress.leitner[idx]||{box:1,nextDue:todayKey()};
+  if (success){ L.box=Math.min(5, L.box+1); } else { L.box=Math.max(1, L.box-1); }
+  L.nextDue=nextDue(L.box); DATA.progress.leitner[idx]=L; saveData(); }
+let koVoice = null; let voicesLoaded=false;
+function pickKoreanVoice(){
+  try{
+    const v = speechSynthesis.getVoices();
+    voicesLoaded = true;
+    koVoice = v.find(v=> /ko|Korean/i.test(v.lang||v.name)) || v.find(v=> /ko/i.test(v.name)) || null;
+  }catch(e){}
+}
+if ('speechSynthesis' in window){
+  window.speechSynthesis.onvoiceschanged = pickKoreanVoice;
+  setTimeout(pickKoreanVoice, 300);
+}
+function speakKo(text){
+  if (!DATA.settings.audio || !DATA.settings.tts) return;
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ko-KR'; if (koVoice) u.voice = koVoice; u.rate = 0.92; u.pitch = 1.0;
+  try { window.speechSynthesis.speak(u); } catch(e){}
+}
+let currentScene = null;
+function go(scene){ currentScene = scene; scene?.onEnter?.(); }
+const Splash = {
+  onEnter(){},
+  onTap(id){ if (id==='start'){ DATA.firstRun=false; saveData(); go(Home); } if (id==='audio'){ DATA.settings.audio = !DATA.settings.audio; saveData(); if (DATA.settings.audio){ speakKo('안녕하세요! 같이 공부해요.'); toast('已開啟音訊 / Audio on'); } else toast('已關閉音訊 / Audio off'); } },
+  draw(now){ drawSky(now);
+    const title = 'K-Bear Learner'; const sub = '一起在可愛的夜森林裡學韓文 — 全介面 Canvas!';
+    drawHeader(title, sub);
+    const cx = W/2, cy = H*0.5; const r = Math.min(W,H)*0.12;
+    ctx.save(); ctx.translate(cx, cy);
+    ctx.fillStyle='#3b4170'; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-r*0.6,-r*0.6,r*0.38,0,Math.PI*2); ctx.arc(r*0.6,-r*0.6,r*0.38,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#ffcfdf'; ctx.beginPath(); ctx.arc(-r*0.6,-r*0.6,r*0.24,0,Math.PI*2); ctx.arc(r*0.6,-r*0.6,r*0.24,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#1b1e34'; ctx.beginPath(); ctx.arc(-r*0.32,-r*0.08,r*0.08,0,Math.PI*2); ctx.arc(r*0.32,-r*0.08,r*0.08,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0,r*0.18,r*0.14,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    const bw = Math.min(W*0.8, 360), bh = 56;
+    button((W-bw)/2, H*0.68, bw, bh, '開始學習 Start', null, 'start', true);
+    chip((W-bw)/2, H*0.68 - 56, DATA.settings.audio? '音訊：開啟 (點我切換)':'音訊：關閉 (點我切換)', 'audio');
+    ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.textAlign='center'; ctx.textBaseline='top';
+    ctx.font = `500 14px system-ui, Noto Sans`;
+    ctx.fillText('建議：點擊開啟音訊以啟用韓文語音（ko-KR）', W/2, H*0.68 + bh + 16);
+  }
+};
+const Home = {
+  onEnter(){ ensureDay(); },
+  onTap(id){ if (id==='flash') go(FlashcardsScene); if (id==='quiz') go(QuizScene); if (id==='game') go(BearGameScene); if (id==='progress') go(ProgressScene); if (id==='settings') go(SettingsScene); },
+  draw(now){ drawSky(now);
+    drawHeader('今晚也一起學韓文 ✨', `每日目標 ${DATA.settings.dailyGoal} XP｜今日 ${DATA.progress.xpToday}｜連續天數 ${DATA.progress.streak}`);
+    const cx = W/2, cy = H*0.33, r = Math.min(W,H)*0.18; const pct = Math.min(1, DATA.progress.xpToday/Math.max(1,DATA.settings.dailyGoal));
+    ctx.save(); ctx.translate(cx,cy);
+    ctx.lineWidth = Math.max(8, r*0.12); ctx.strokeStyle='rgba(255,255,255,0.12)';
+    ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle=THEME.mint; ctx.beginPath(); ctx.arc(0,0,r,-Math.PI/2, -Math.PI/2 + Math.PI*2*pct); ctx.stroke();
+    ctx.fillStyle=THEME.white; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`800 ${Math.max(18, Math.floor(r*0.36))}px system-ui, Noto Sans`; ctx.fillText(`${Math.floor(pct*100)}%`, 0, -4);
+    ctx.font=`500 ${Math.max(12, Math.floor(r*0.18))}px system-ui, Noto Sans`; ctx.globalAlpha=0.85; ctx.fillText('今日進度', 0, r*0.4); ctx.globalAlpha=1; ctx.restore();
+    const pad = 16; const bw = Math.min(320, W - pad*2), bh = 54; let x = (W-bw)/2; let y = cy + r + 40;
+    button(x,y,bw,bh,'快閃單字 Flashcards', '左右滑動翻牌 / Swipe to review', 'flash'); y+=bh+12;
+    button(x,y,bw,bh,'測驗 Quizzes', '選擇題 / 聽力題', 'quiz', false); y+=bh+12;
+    button(x,y,bw,bh,'小熊貪吃蛇 Bear x 고구마', '吃到就念單字 (↑↓←→)', 'game'); y+=bh+12;
+    button(x,y,bw,bh,'今日成就 Progress', 'XP、單字、連勝天數', 'progress', false); y+=bh+12;
+    button(x,y,bw,bh,'設定 Settings', '語音、重置、目標', 'settings', false);
+  }
+};
+const FlashcardsScene = {
+  idx: 0, flipped: false, lastSwipe:0,
+  onEnter(){ this.pickNext(); },
+  pickNext(){
+    const due = [];
+    const tk = todayKey();
+    WORDS.forEach((w,i)=>{ const L = DATA.progress.leitner[i]; if (!L || L.nextDue <= tk) due.push(i); });
+    if (due.length){ this.idx = due[Math.floor(Math.random()*due.length)]; }
+    else { this.idx = Math.floor(Math.random()*WORDS.length); }
+    this.flipped=false;
+  },
+  onTap(id){ if (id==='back') go(Home); if (id==='flip') { this.flipped=!this.flipped; if (this.flipped) speakKo(WORDS[this.idx].ko); }
+    if (id==='again'){ updateLeitner(this.idx,false); addXP(1); this.pickNext(); }
+    if (id==='got'){ updateLeitner(this.idx,true); addXP(4); this.pickNext(); }
+  },
+  onSwipe(dir){ const now = performance.now(); if (now - this.lastSwipe < 200) return; this.lastSwipe = now;
+    if (dir==='left'){ this.flipped=false; updateLeitner(this.idx,false); addXP(1); toast('再記一次 / Again'); this.pickNext(); }
+    if (dir==='right'){ this.flipped=false; updateLeitner(this.idx,true); addXP(4); toast('我會了 / Got it'); this.pickNext(); }
+    if (dir==='up' || dir==='down'){ this.flipped=!this.flipped; if (this.flipped) speakKo(WORDS[this.idx].ko); }
+  },
+  draw(now){ drawSky(now); drawHeader('快閃單字 Flashcards', '左右：Again / Got it；上下：翻牌；點擊也可');
+    const w = Math.min(W*0.86, 360), h = Math.min(H*0.45, 320); const x=(W-w)/2, y=H*0.18;
+    ctx.save(); ctx.shadowColor='rgba(0,0,0,0.35)'; ctx.shadowBlur=20; ctx.shadowOffsetY=6;
+    ctx.fillStyle='rgba(255,255,255,0.06)'; roundedRect(ctx,x,y,w,h,18); ctx.fill(); ctx.restore();
+    const word = WORDS[this.idx];
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    if (!this.flipped){
+      ctx.fillStyle=THEME.white; ctx.font=`800 ${Math.max(28, Math.floor(w*0.12))}px system-ui, Noto Sans`;
+      ctx.fillText(word.ko, x+w/2, y+h/2);
+      ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.font=`500 ${Math.max(14, Math.floor(w*0.05))}px system-ui, Noto Sans`;
+      ctx.fillText('點擊或上/下滑動翻牌', x+w/2, y*h*0.75);
+    } else {
+      ctx.fillStyle=THEME.mint; ctx.font=`700 ${Math.max(22, Math.floor(w*0.09))}px system-ui, Noto Sans`;
+      ctx.fillText(word.ko, x+w/2, y*h*0.38);
+      ctx.fillStyle=THEME.white; ctx.font=`600 ${Math.max(18, Math.floor(w*0.07))}px system-ui, Noto Sans`;
+      ctx.fillText(word.zh, x+w/2, y*h*0.6);
+    }
+    const bw = Math.min(150, w*0.45), bh = 48; const gap=20; const yy = y+h+24; const xx = (W - (bw*2+gap))/2;
+    button(xx, yy, bw, bh, '再記一次', 'Again', 'again', false);
+    button(xx+bw+gap, yy, bw, bh, '我會了', 'Got it', 'got', true);
+    const backW = 46; button(18, H-18-backW, backW, backW, '↩', '返回', 'back', false);
+    hits.add('flip', x,y,w,h, ()=> this.onTap('flip'));
+  }
+};
+const QuizScene = {
+  q:null, idx:0, options:[], correctIdx:0, lastPick:-1, timer:0,
+  onEnter(){ this.makeQ(); },
+  makeQ(){
+    const type = Math.random()<0.5 ? 'ko-zh' : 'listen-ko';
+    const i = Math.floor(Math.random()*WORDS.length);
+    const correct = WORDS[i];
+    let opts = new Set([i]);
+    while (opts.size<4){ opts.add(Math.floor(Math.random()*WORDS.length)); }
+    const arr = Array.from(opts);
+    const shuffled = arr.sort(()=>Math.random()-0.5);
+    const correctIdx = shuffled.indexOf(i);
+    this.q = {type, i, correct, arr:shuffled}; this.correctIdx = correctIdx; this.lastPick=-1; this.timer = performance.now();
+    if (type==='listen-ko') speakKo(correct.ko);
+  },
+  pick(j){ this.lastPick=j; const good = (j===this.correctIdx); if (good){ addXP(5); DATA.progress.quiz.correct++; toast('正確！+5 XP'); } else { addXP(1); toast('可惜～ +1 XP'); }
+    DATA.progress.quiz.total++; saveData(); setTimeout(()=> this.makeQ(), 500);
+  },
+  onTap(id){ if (id==='back') go(Home); if (id.startsWith('opt-')){ const j=+id.split('-')[1]; this.pick(j); } if (id==='speak'){ if (this.q?.type==='listen-ko') speakKo(this.q.correct.ko); }
+  },
+  draw(now){ drawSky(now); drawHeader('測驗 Quizzes', '有時顯示韓文配中文選項；有時播放韓文請選正確詞');
+    if (!this.q) return;
+    const pad=20; const w = Math.min(420, W-pad*2); const x = (W-w)/2; const y = H*0.2;
+    ctx.fillStyle='rgba(255,255,255,0.08)'; roundedRect(ctx,x,y,w,100,14); ctx.fill();
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    if (this.q.type==='ko-zh'){
+      ctx.fillStyle=THEME.white; ctx.font=`800 28px system-ui, Noto Sans`; ctx.fillText(this.q.correct.ko, x+w/2, y+50);
+    } else {
+      ctx.fillStyle=THEME.white; ctx.font=`700 18px system-ui, Noto Sans`; ctx.fillText('請聽聲音，選擇正確的韓文', x+w/2, y+32);
+      chip(x+w-120, y+10, '🔊 再播放', 'speak');
+    }
+    const bh = 54, gap=12; let oy = y+120;
+    for (let j=0;j<4;j++){
+      const idx = this.q.arr[j]; const o = WORDS[idx];
+      const label = this.q.type==='ko-zh'? o.zh : o.ko;
+      button(x, oy, w, bh, label, null, `opt-${j}`, j===this.correctIdx);
+      oy += bh+gap;
+    }
+    const backW=46; button(18, H-18-backW, backW, backW, '↩', '返回', 'back', false);
+  }
+};
+const BearGameScene = {
+  grid: null, dir:{x:1,y:0}, lastMove:0, speed:130, snake:[], food:null, alive:true, score:0, usedWords: new Set(), lastWord:null,
+  onEnter(){ this.reset(); },
+  reset(){
+    const cell = Math.max(16, Math.floor(Math.min(W,H)/24));
+    const cols = Math.floor(W/cell)-2; const rows = Math.floor(H/cell)-6;
+    this.grid = {cell, cols, rows, ox: cell, oy: cell*3};
+    this.dir = {x:1,y:0}; this.alive=true; this.score=0; this.snake=[{x:2,y:Math.floor(rows/2)}];
+    for(let i=1;i<5;i++) this.snake.unshift({x:i+2,y:Math.floor(rows/2)});
+    this.placeFood(); this.usedWords.clear(); this.lastWord=null;
+  },
+  placeFood(){
+    while(true){
+      const p = {x: Math.floor(Math.random()*this.grid.cols), y: Math.floor(Math.random()*this.grid.rows)};
+      if (!this.snake.some(s=> s.x===p.x && s.y===p.y)) { this.food=p; return; }
+    }
+  },
+  onKey(key,down){ if (!down) return; if (!this.alive) { this.reset(); return; }
+    if (key==='ArrowUp' || key==='w'){ if (this.dir.y===0) this.dir={x:0,y:-1}; }
+    if (key==='ArrowDown' || key==='s'){ if (this.dir.y===0) this.dir={x:0,y:1}; }
+    if (key==='ArrowLeft' || key==='a'){ if (this.dir.x===0) this.dir={x:-1,y:0}; }
+    if (key==='ArrowRight' || key==='d'){ if (this.dir.x===0) this.dir={x:1,y:0}; }
+  },
+  onTap(id){ if (id==='back') go(Home); if (id==='reset'){ this.reset(); }
+    if (id==='up') this.onKey('ArrowUp',true);
+    if (id==='down') this.onKey('ArrowDown',true);
+    if (id==='left') this.onKey('ArrowLeft',true);
+    if (id==='right') this.onKey('ArrowRight',true);
+  },
+  step(now){ if (!this.alive) return; if (now - this.lastMove < this.speed) return; this.lastMove=now;
+    const head = {x:this.snake[0].x + this.dir.x, y:this.snake[0].y + this.dir.y};
+    if (head.x<0||head.y<0||head.x>=this.grid.cols||head.y>=this.grid.rows || this.snake.some(s=> s.x===head.x && s.y===head.y)) { this.alive=false; toast('撞到了！點擊↻再來一次'); return; }
+    this.snake.unshift(head);
+    if (head.x===this.food.x && head.y===this.food.y){
+      this.onEat(); this.placeFood();
+    } else {
+      this.snake.pop();
+    }
+  },
+  onEat(){
+    this.score++; addXP(2);
+    let idx = Math.floor(Math.random()*WORDS.length); let guard=0;
+    while(this.usedWords.has(idx) && guard<200){ idx=Math.floor(Math.random()*WORDS.length); guard++; }
+    this.usedWords.add(idx); this.lastWord = WORDS[idx]; sawWordToday(idx);
+    if (DATA.settings.audio && DATA.settings.tts) {
+      speakKo(`${this.lastWord.ko}`);
+    }
+  },
+  draw(now){ this.step(now); drawSky(now); drawHeader('小熊貪吃蛇 — 고구마', '↑↓←→ 或下方方向鍵。吃到就播放新韓文單字');
+    const g=this.grid; const x0=g.ox, y0=g.oy; const cs=g.cell; const w=g.cols*cs, h=g.rows*cs;
+    ctx.fillStyle='rgba(255,255,255,0.04)'; roundedRect(ctx,x0-6,y0-6,w+12,h+12,14); ctx.fill();
+    if (this.food){ const fx=x0+this.food.x*cs+cs/2, fy=y0+this.food.y*cs+cs/2; drawSweetPotato(fx,fy, cs*0.46); }
+    for (let i=0;i<this.snake.length;i++){
+      const s = this.snake[i]; const cx=x0+s.x*cs+cs/2, cy=y0+s.y*cs+cs/2;
+      if (i===0) drawBearHead(cx,cy, cs*0.52); else { ctx.fillStyle='#525a94'; ctx.beginPath(); ctx.arc(cx,cy, cs*0.36, 0, Math.PI*2); ctx.fill(); }
+    }
+    ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillStyle=THEME.white; ctx.font='700 16px system-ui, Noto Sans';
+    ctx.fillText(`分數 ${this.score}｜XP ${DATA.progress.xpToday}/${DATA.settings.dailyGoal}`, 20, y0+h+12);
+    if (this.lastWord){ const msg = `${this.lastWord.ko}  →  ${this.lastWord.zh}`; const fs=18; ctx.font=`700 ${fs}px system-ui`;
+      const padding=12; const ww=ctx.measureText(msg).width+padding*2, hh=fs+padding*1.2; const bx=(W-ww)/2, by=y0- hh - 10;
+      ctx.fillStyle='rgba(0,0,0,0.5)'; roundedRect(ctx,bx,by,ww,hh,12); ctx.fill(); ctx.fillStyle=THEME.mint; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(msg, bx+ww/2, by+hh/2);
+    }
+    const s = Math.min(82, Math.max(64, Math.min(W,H)*0.12)); const pad=16; const cx=W - s*1.5 - pad, cy=H - s*1.5 - pad;
+    drawDPad(cx,cy,s);
+    hits.add('up', cx, cy-s, s, s, ()=>{});
+    hits.add('down', cx, cy+s, s, s, ()=>{});
+    hits.add('left', cx-s, cy, s, s, ()=>{});
+    hits.add('right', cx+s, cy, s, s, ()=>{});
+    const backW=46; button(18, H-18-backW, backW, backW, '↩', '返回', 'back', false);
+    const rW=46; button(18+backW+10, H-18-rW, rW, rW, '↻', '重來', 'reset', false);
+  }
+};
+function drawBearHead(x,y,r){
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle='#3b4170'; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-r*0.6,-r*0.6,r*0.45,0,Math.PI*2); ctx.arc(r*0.6,-r*0.6,r*0.45,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ffcfdf'; ctx.beginPath(); ctx.arc(-r*0.6,-r*0.6,r*0.28,0,Math.PI*2); ctx.arc(r*0.6,-r*0.6,r*0.28,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#1b1e34'; ctx.beginPath(); ctx.arc(-r*0.32,-r*0.08,r*0.12,0,Math.PI*2); ctx.arc(r*0.32,-r*0.08,r*0.12,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(0,r*0.22,r*0.18,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawSweetPotato(x,y,r){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(Math.sin(T*0.002 + x*0.01)*0.06);
+  const g=ctx.createLinearGradient(-r,-r,r,r); g.addColorStop(0,'#d27a3f'); g.addColorStop(1,'#a4532e');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(0,0,r*1.2,r*0.8,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#ffe6a1'; ctx.beginPath(); ctx.ellipse(r*0.2,0,r*0.35,r*0.22,0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawDPad(cx,cy,s){
+  ctx.save(); ctx.globalAlpha=0.9; ctx.fillStyle='rgba(255,255,255,0.08)';
+  roundedRect(ctx,cx-s,cy-s*2,s*2,s,12); ctx.fill();
+  roundedRect(ctx,cx-s,cy+s,s*2,s,12); ctx.fill();
+  roundedRect(ctx,cx-s*2,cy,s,s*2,12); ctx.fill();
+  roundedRect(ctx,cx+s,cy,s,s*2,12); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font='700 18px system-ui';
+  ctx.fillText('↑', cx, cy-s*1.5 + s/2);
+  ctx.fillText('↓', cx, cy+s*1.5 + s/2);
+  ctx.fillText('←', cx-s*1.5 + s/2, cy);
+  ctx.fillText('→', cx+s*1.5 + s/2, cy);
+  ctx.restore();
+}
+const ProgressScene = {
+  onTap(id){ if (id==='back') go(Home); if (id==='resetxp'){ DATA.progress.xpToday = 0; saveData(); toast('已重置今日 XP'); } },
+  draw(now){ drawSky(now); drawHeader('今日成就 Progress', `XP ${DATA.progress.xpToday}/${DATA.settings.dailyGoal}｜總XP ${DATA.progress.xpTotal}｜連續 ${DATA.progress.streak}`);
+    const pad=20; const w=Math.min(460,W-pad*2); const x=(W-w)/2; let y=H*0.18;
+    const pct=Math.min(1, DATA.progress.xpToday/Math.max(1,DATA.settings.dailyGoal));
+    ctx.fillStyle='rgba(255,255,255,0.08)'; roundedRect(ctx,x,y,w,18,9); ctx.fill();
+    ctx.fillStyle=THEME.lime; roundedRect(ctx,x,y,w*pct,18,9); ctx.fill(); y+=28;
+    ctx.fillStyle=THEME.white; ctx.font='600 16px system-ui'; ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText(`測驗正確率：${DATA.progress.quiz.total? Math.round(DATA.progress.quiz.correct/DATA.progress.quiz.total*100):0}%`, x, y); y+=28;
+    const listH = Math.min(260, H*0.4); const rowH=40; const words = DATA.progress.wordsSeenToday.slice(-Math.floor(listH/rowH)*1.5);
+    ctx.fillStyle='rgba(255,255,255,0.06)'; roundedRect(ctx,x,y,w,listH,14); ctx.fill();
+    let yy=y+10; ctx.textAlign='left'; ctx.textBaseline='middle';
+    for (let i=Math.max(0, words.length- Math.floor(listH/rowH)); i<words.length; i++){
+      const idx=words[i]; const wv=WORDS[idx];
+      ctx.fillStyle=THEME.white; ctx.font='700 16px system-ui'; ctx.fillText(wv.ko, x+16, yy+14);
+      ctx.fillStyle='rgba(255,255,255,0.8)'; ctx.font='500 14px system-ui'; ctx.fillText(wv.zh, x+160, yy+14);
+      yy+=rowH;
+    }
+    y += listH + 16;
+    button(x, y, w, 48, '重置今日 XP', 'Reset today only', 'resetxp', false);
+    const backW=46; button(18, H-18-backW, backW, backW, '↩', '返回', 'back', false);
+  }
+};
+const SettingsScene = {
+  onTap(id){ if (id==='back') go(Home);
+    if (id==='audio'){ DATA.settings.audio=!DATA.settings.audio; saveData(); toast(DATA.settings.audio?'音訊已開':'音訊已關'); }
+    if (id==='tts'){ DATA.settings.tts=!DATA.settings.tts; saveData(); toast(DATA.settings.tts?'TTS已開':'TTS已關'); }
+    if (id==='goal-'){ DATA.settings.dailyGoal=Math.max(10, DATA.settings.dailyGoal-5); saveData(); }
+    if (id==='goal+'){ DATA.settings.dailyGoal=Math.min(100, DATA.settings.dailyGoal+5); saveData(); }
+    if (id==='resetAll'){ localStorage.removeItem(LS_KEY); DATA = loadData() || { firstRun:false, settings:{audio:true,tts:true,language:'zh',dailyGoal:30}, progress:{ lastActive:todayKey(), streak:0, xpToday:0, xpTotal:0, wordsSeenToday:[], leitner:{}, quiz:{correct:0,total:0}}}; toast('資料已清空'); go(Home); }
+  },
+  draw(now){ drawSky(now); drawHeader('設定 Settings', '語音、目標、重置');
+    const pad=20; const w=Math.min(420,W-pad*2); const x=(W-w)/2; let y=H*0.2; const bh=54;
+    button(x,y,w,bh, DATA.settings.audio? '音訊：開啟':'音訊：關閉', 'Audio master', 'audio', DATA.settings.audio); y+=bh+12;
+    button(x,y,w,bh, DATA.settings.tts? 'TTS 韓文：開啟':'TTS 韓文：關閉', 'ko-KR voice', 'tts', DATA.settings.tts); y+=bh+12;
+    ctx.fillStyle=THEME.white; ctx.textAlign='left'; ctx.textBaseline='top'; ctx.font='600 16px system-ui';
+    ctx.fillText('每日目標 Daily Goal', x, y); y+=8; const bw=(w-80)/2; y+=8;
+    button(x,y,60,44,'－',null,'goal-'); button(x+70,y,bw,44, `${DATA.settings.dailyGoal} XP`, null, 'goal-val', false); button(x+70+bw+10,y,60,44,'＋',null,'goal+'); y+=44+16;
+    button(x,y,w,48,'重置所有資料','Clear all data','resetAll', false);
+    const backW=46; button(18, H-18-backW, backW, backW, '↩', '返回', 'back', false);
+  }
+};
+function loop(now){ T = now; hits.clear();
+  (currentScene||Splash).draw(now);
+  drawToast(now);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+if (!window.DATA) { var DATA = DATA; } // keep linter quiet
+if (DATA.firstRun) go(Splash); else go(Home);
+  </script>
+</body>
+</html>
